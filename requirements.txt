@@ -1,0 +1,5 @@
+pip install flask-Cors Pillow gunicorn 
+python -m pip show tensorflow
+python -m pip show flask
+pip install --upgrade pip
+pip install flask tensorflow pillow
