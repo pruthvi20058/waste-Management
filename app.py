@@ -6,7 +6,7 @@ from PIL import Image, ImageStat, ImageDraw, ImageFont
 import colorsys
 
 # Initialize Flask app
-app = Flask(waste-management-xi-peach.vercel.app_)
+app = Flask(__name__)
 CORS(app)
 
 # --- Material Detection Logic ---
