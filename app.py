@@ -6,7 +6,7 @@ from PIL import Image, ImageStat, ImageDraw, ImageFont
 import colorsys
 
 # Initialize Flask app
-app = Flask(__name__)
+app = Flask(waste-management-xi-peach.vercel.app_)
 CORS(app)
 
 # --- Material Detection Logic ---
@@ -372,4 +372,5 @@ if __name__ == '__main__':
     print("🔗 Endpoint: POST /classify_waste")
     print("💡 Features: Multi-object detection + Classification")
     print("=" * 60)
+
     app.run(debug=True, port=5000, host='127.0.0.1')
