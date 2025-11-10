@@ -268,7 +268,7 @@ def classify_waste_material(material_name, region_stats):
 
 
 # --- API Endpoint ---
-@app.route('/classify_waste', methods=['POST'])
+@app.route("/api/predict", methods=["POST"])
 def classify_waste_api():
     """
     Multi-material detection and classification endpoint.
@@ -374,3 +374,4 @@ if __name__ == '__main__':
     print("=" * 60)
 
     app.run(debug=True, port=5000, host='127.0.0.1')
+
