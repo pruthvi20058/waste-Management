@@ -1,171 +1,739 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Multi-Material Waste Classifier</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Waste Classifier</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Tailwind Configuration -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0' },
+                            '100%': { opacity: '1' },
+                        }
+                    },
+                    animation: {
+                        'fade-in': 'fadeIn 0.5s ease-out',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom styles for Lucide icons */
+        .lucide {
+            width: 1em;
+            height: 1em;
+        }
+        /* Style for markdown content */
+        .prose h1, .prose h2, .prose h3 {
+            font-weight: bold;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+        }
+        .prose ul {
+            list-style-type: disc;
+            padding-left: 1.5rem;
+        }
+        .prose li {
+            margin-bottom: 0.25rem;
+        }
+    </style>
 </head>
+<body class="font-sans">
+    <div id="app" class="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 py-8 px-4">
+        <!-- Content will be rendered here by JS -->
+    </div>
 
-<body class="bg-gradient-to-br from-blue-500 to-purple-700 min-h-screen flex items-center justify-center p-6">
-  <div id="root" class="w-full max-w-6xl"></div>
+    <script>
+        // --- State Variables ---
+        let image = null;
+        let preview = null;
+        let result = null;
+        let loading = false;
+        let error = null;
+        let showInfo = false;
+        let cameraActive = false;
+        let stream = null;
+        let captureMode = 'upload'; // 'upload' or 'camera'
 
-  <script type="text/babel">
-    const { useState } = React;
+        // Gemini Feature States
+        let geminiLoading = false;
+        let geminiGuide = null;
+        let geminiError = null;
+        let geminiSources = [];
+        
+        // --- DOM References ---
+        const fileInputRef = document.createElement('input');
+        fileInputRef.type = 'file';
+        fileInputRef.accept = 'image/*';
+        fileInputRef.id = 'file-upload';
+        fileInputRef.classList.add('hidden');
+        
+        const videoRef = document.createElement('video');
+        const canvasRef = document.createElement('canvas');
 
-    // ✅ Live Backend Endpoint (Render)
-    const API_URL = "https://waste-management-2-pss8.onrender.com/api/predict";
+        // --- Configuration ---
+        const API_URL = "https://waste-management-2-pss8.onrender.com/classify_waste";
+        const GEMINI_API_KEY = ""; // Key is provided by runtime environment
+        const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`;
 
-    const App = () => {
-      const [image, setImage] = useState(null);
-      const [preview, setPreview] = useState(null);
-      const [result, setResult] = useState(null);
-      const [loading, setLoading] = useState(false);
 
-      // Handle image upload
-      const handleFileChange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          setImage(file);
-          setPreview(URL.createObjectURL(file));
-          setResult(null);
-        }
-      };
+        // --- Utility Functions ---
 
-      // Send image to backend for classification
-      const handleSubmit = async () => {
-        if (!image) {
-          alert("Please upload an image first!");
-          return;
-        }
+        const getCategoryIcon = (category) => {
+            if (category.includes('Recyclable')) return `<i class="lucide lucide-recycle w-5 h-5 text-green-600"></i>`;
+            if (category.includes('Hazardous') || category.includes('E-Waste')) return `<i class="lucide lucide-alert-triangle w-5 h-5 text-red-600"></i>`;
+            return `<i class="lucide lucide-trash-2 w-5 h-5 text-gray-600"></i>`;
+        };
 
-        setLoading(true);
-        setResult(null);
+        const getCategoryColor = (color) => {
+            const colors = {
+                blue: 'border-blue-500 bg-blue-100/70 text-blue-800',
+                green: 'border-green-500 bg-green-100/70 text-green-800',
+                yellow: 'border-yellow-500 bg-yellow-100/70 text-yellow-800',
+                red: 'border-red-500 bg-red-100/70 text-red-800',
+                gray: 'border-gray-500 bg-gray-100/70 text-gray-800',
+            };
+            return colors[color] ? `${colors[color]}` : 'border-gray-500 bg-gray-100/70 text-gray-800';
+        };
 
-        const formData = new FormData();
-        formData.append("file", image);
+        const getCardBackgroundColor = (color) => {
+            const colors = {
+                green: 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200',
+                red: 'bg-gradient-to-br from-red-50 to-orange-50 border-red-200',
+                gray: 'bg-gradient-to-br from-gray-50 to-slate-50 border-gray-200',
+            };
+            return colors[color] || 'bg-gradient-to-br from-gray-50 to-slate-50 border-gray-200';
+        };
+        
+        const getBinColorClasses = (binColor) => {
+            if (binColor.includes('Blue')) return 'bg-blue-200 text-blue-800';
+            if (binColor.includes('Green') || binColor.includes('Brown')) return 'bg-green-200 text-green-800';
+            if (binColor.includes('Special') || binColor.includes('E-Waste')) return 'bg-red-200 text-red-800';
+            return 'bg-gray-200 text-gray-800';
+        };
 
-        try {
-          const res = await fetch(API_URL, { method: "POST", body: formData });
-          const data = await res.json();
-          setResult(data);
-        } catch (err) {
-          console.error(err);
-          setResult({ success: false, message: "Cannot connect to backend. Please try again." });
-        } finally {
-          setLoading(false);
-        }
-      };
+        const getIconHtml = (name, classes = "") => {
+             // Wrapper for Lucide Icons
+            return `<i class="lucide lucide-${name} ${classes}"></i>`;
+        };
 
-      return (
-        <div className="bg-white p-8 rounded-3xl shadow-2xl w-full">
-          <h1 className="text-4xl font-extrabold text-center mb-3 text-gray-800">
-            ♻️ Multi-Material Waste Classifier
-          </h1>
-          <p className="text-center text-gray-600 mb-8">
-            Upload an image to detect materials and get disposal guidance.
-          </p>
+        // Utility function to convert simple Markdown to HTML for display
+        const convertMarkdownToHtml = (markdown) => {
+            let html = markdown
+                .replace(/^### (.*$)/gim, '<h3 class="text-xl font-semibold mt-4 mb-2">$1</h3>')
+                .replace(/^## (.*$)/gim, '<h2 class="text-2xl font-bold mt-6 mb-3">$1</h2>')
+                .replace(/^# (.*$)/gim, '<h1 class="text-3xl font-extrabold mt-8 mb-4">$1</h1>')
+                .replace(/^\* (.*$)/gim, '<li class="ml-4 list-disc text-gray-700">$1</li>')
+                .replace(/^\- (.*$)/gim, '<li class="ml-4 list-disc text-gray-700">$1</li>')
+                .replace(/(\r\n|\n|\r)/gm, '<br/>');
+                
+            // Wrap list items in <ul> tags
+            if (html.includes('<li>')) {
+                html = html.replace(/((?:<li>.*?<\/li>\s*)+)/gs, (match) => `<ul class="space-y-1">${match}</ul>`);
+            }
+            
+            // Cleanup multiple <br/>
+            html = html.replace(/<br\/>(<br\/>)+/g, '<br/><br/>');
 
-          <div className="flex flex-col items-center space-y-4">
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleFileChange}
-              className="text-sm"
-            />
-            {preview && (
-              <img
-                src={preview}
-                alt="Preview"
-                className="max-h-72 rounded-xl border shadow-md"
-              />
-            )}
+            return html;
+        };
 
-            <button
-              onClick={handleSubmit}
-              disabled={loading}
-              className={`mt-4 px-8 py-3 rounded-lg font-bold text-white transition ${
-                loading
-                  ? "bg-gray-400 cursor-not-allowed"
-                  : "bg-green-600 hover:bg-green-700"
-              }`}
-            >
-              {loading ? "Detecting..." : "🔍 Detect Materials"}
-            </button>
-          </div>
+        // --- Core Logic Functions ---
 
-          {/* Display Results */}
-          {result && (
-            <div className="mt-8 bg-gray-50 rounded-xl p-6 border">
-              {result.success ? (
-                <>
-                  <h2 className="text-xl font-bold text-green-700 mb-3">
-                    ✅ {result.total_materials_detected} Material
-                    {result.total_materials_detected !== 1 ? "s" : ""} Detected
-                  </h2>
+        const stopCamera = () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+                cameraActive = false;
+                renderApp();
+            }
+        };
 
-                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {result.materials.map((m, i) => (
-                      <div
-                        key={i}
-                        className="p-4 bg-white rounded-xl shadow hover:shadow-lg transition border border-gray-200"
-                      >
-                        <h3 className="font-bold text-gray-800 mb-1">
-                          {m.detected_material}
-                        </h3>
-                        <p className="text-sm text-gray-600">
-                          Confidence: {(m.confidence * 100).toFixed(1)}%
+        const resetApp = () => {
+            image = null;
+            preview = null;
+            result = null;
+            error = null;
+            
+            geminiGuide = null;
+            geminiError = null;
+            geminiSources = [];
+            
+            stopCamera();
+            if (fileInputRef.value) {
+                fileInputRef.value = ''; // CRUCIAL FIX for file input reset
+            }
+            captureMode = 'upload';
+            renderApp();
+        };
+
+        const startCamera = async () => {
+            image = null;
+            preview = null;
+            result = null;
+
+            try {
+                const mediaStream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                
+                videoRef.srcObject = mediaStream;
+                stream = mediaStream;
+                cameraActive = true;
+                captureMode = 'camera';
+                error = null;
+            } catch (err) {
+                console.error('Camera error:', err);
+                error = 'Unable to access camera. Please check permissions or try file upload.';
+                stopCamera();
+            }
+            renderApp();
+        };
+
+        const capturePhoto = () => {
+            if (videoRef && canvasRef) {
+                const video = videoRef;
+                const canvas = canvasRef;
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                const context = canvas.getContext('2d');
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                canvas.toBlob((blob) => {
+                    if (!blob) {
+                        error = "Failed to capture photo.";
+                        renderApp();
+                        return;
+                    }
+                    image = new File([blob], 'camera-capture.jpg', { type: 'image/jpeg' });
+                    preview = URL.createObjectURL(blob);
+                    result = null;
+                    stopCamera();
+                    renderApp();
+                }, 'image/jpeg', 0.95);
+            }
+        };
+
+        const handleFileChange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                if (file.size > 10 * 1024 * 1024) {
+                    error = "File size must be less than 10MB";
+                    e.target.value = null; 
+                    renderApp();
+                    return;
+                }
+                image = file;
+                preview = URL.createObjectURL(file);
+                result = null;
+                error = null;
+                captureMode = 'upload';
+                renderApp();
+            }
+        };
+
+        const handleSubmit = async () => {
+            if (!image) {
+                error = "Please upload an image or capture a photo first!";
+                renderApp();
+                return;
+            }
+
+            loading = true;
+            result = null;
+            error = null;
+            renderApp();
+
+            const formData = new FormData();
+            formData.append("file", image);
+
+            try {
+                const res = await fetch(API_URL, {
+                    method: "POST",
+                    body: formData,
+                });
+                
+                if (!res.ok) {
+                    let errorBody = {};
+                    try {
+                        const contentType = res.headers.get("content-type");
+                        if (contentType && contentType.indexOf("application/json") !== -1) {
+                          errorBody = await res.json();
+                        }
+                    } catch (e) { /* ignore parse error */ }
+                    
+                    throw new Error(errorBody.message || `Server responded with status: ${res.status}. Please check backend logs.`);
+                }
+                
+                const data = await res.json();
+                result = data;
+            } catch (err) {
+                console.error(err);
+                error = `Classification failed: ${err.message}. Ensure your backend API is running and accessible.`;
+            } finally {
+                loading = false;
+                renderApp();
+            }
+        };
+        
+        const fetchGeminiGuide = async () => {
+            if (!result || !result.materials || result.materials.length === 0) return;
+
+            geminiLoading = true;
+            geminiGuide = null;
+            geminiError = null;
+            geminiSources = [];
+            renderApp();
+
+            const materialsList = result.materials.map(m => m.detected_material).filter((value, index, self) => self.indexOf(value) === index);
+            const userQuery = `Generate a concise, highly specific recycling and sustainability guide for the following materials. Focus on: 1) A quick, actionable disposal tip for each material (e.g., must rinse/must check local center). 2) One interesting sustainability fact or reduction tip for these materials. The materials are: ${materialsList.join(', ')}.`;
+
+            const systemPrompt = "You are an expert Environmental Sustainability Consultant and Recycling Advisor. Your response must be formatted in simple Markdown (using ## and *). Provide an introduction, a bulleted list for the disposal tips, and a final section for sustainability facts/tips. Keep the total response concise, under 150 words.";
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            try {
+                const response = await fetch(GEMINI_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Gemini API request failed with status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                const candidate = data.candidates?.[0];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const text = candidate.content.parts[0].text;
+                    
+                    let sources = [];
+                    const groundingMetadata = candidate.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+                    }
+
+                    geminiGuide = text;
+                    geminiSources = sources;
+                } else {
+                    geminiError = "Gemini generated an empty or malformed response.";
+                }
+
+            } catch (err) {
+                console.error('Gemini API Error:', err);
+                geminiError = `Failed to fetch sustainability guide. Please check the console for details.`;
+            } finally {
+                geminiLoading = false;
+                renderApp();
+            }
+        };
+
+        // --- Render Function ---
+
+        const renderApp = () => {
+            const appDiv = document.getElementById('app');
+            
+            // Build the main HTML structure using template literals
+            appDiv.innerHTML = `
+                <div class="max-w-6xl mx-auto">
+                    <!-- Header -->
+                    <div class="text-center mb-8 animate-fade-in">
+                        <div class="flex justify-center items-center gap-3 mb-4">
+                            ${getIconHtml('recycle', 'w-12 h-12 text-emerald-600')}
+                            <h1 class="text-5xl font-extrabold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
+                                Smart Waste Classifier
+                            </h1>
+                        </div>
+                        <p class="text-gray-600 text-lg max-w-2xl mx-auto">
+                            AI-powered waste detection with live camera support
                         </p>
-                        <p className="text-sm text-gray-600">
-                          Category: {m.classification.category}
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          Bin: {m.classification.bin_color}
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          Instructions: {m.classification.instructions}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
+                        <button id="info-toggle" class="mt-4 inline-flex items-center gap-2 text-emerald-600 hover:text-emerald-700 transition">
+                            ${getIconHtml('info', 'w-4 h-4')}
+                            <span class="text-sm font-medium">How it works</span>
+                        </button>
+                    </div>
 
-                  <div className="mt-6 text-center text-sm text-gray-700">
-                    ♻️ Recyclable:{" "}
-                    <span className="font-semibold text-green-600">
-                      {result.summary.recyclable_items}
-                    </span>{" "}
-                    | ⚠️ Hazardous:{" "}
-                    <span className="font-semibold text-red-600">
-                      {result.summary.hazardous_items}
-                    </span>{" "}
-                    | 🗑️ General:{" "}
-                    <span className="font-semibold text-gray-600">
-                      {result.summary.general_waste_items}
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <div className="text-center text-red-600 font-semibold">
-                  ⚠️ {result.message || "Error occurred during detection."}
+                    <!-- Info Panel -->
+                    ${showInfo ? `
+                    <div class="bg-white rounded-2xl shadow-lg p-6 mb-6 border border-emerald-200">
+                        <div class="flex justify-between items-start mb-4">
+                            <h3 class="text-xl font-semibold text-gray-800">How to Use</h3>
+                            <button id="info-close" class="text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-50">
+                                ${getIconHtml('x', 'w-5 h-5')}
+                            </button>
+                        </div>
+                        <ol class="space-y-2 text-gray-600 list-decimal pl-5">
+                            <li><span>Choose to capture a photo with your camera or upload an existing image</span></li>
+                            <li><span>Click "Analyze Waste" to detect materials in the image</span></li>
+                            <li><span>Review the classification results and disposal instructions</span></li>
+                            <li><span>Follow the bin color and instructions for proper disposal</span></li>
+                            <li><span>Click the <b>✨ Generate Guide</b> button for detailed sustainability tips!</span></li>
+                        </ol>
+                    </div>
+                    ` : ''}
+
+                    <!-- Main Card -->
+                    <div class="bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-200">
+                        <!-- Mode Selection -->
+                        <div class="p-6 bg-gradient-to-r from-emerald-500 to-teal-500">
+                            <div class="flex justify-center gap-4 mb-4">
+                                <button id="upload-mode-btn" class="flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all ${
+                                    captureMode === 'upload' && !cameraActive
+                                        ? 'bg-white text-emerald-600 shadow-xl ring-2 ring-white/50'
+                                        : 'bg-white/20 text-white hover:bg-white/30 disabled:opacity-50'
+                                }" ${cameraActive ? 'disabled' : ''}>
+                                    ${getIconHtml('upload', 'w-5 h-5')}
+                                    Upload Image
+                                </button>
+                                <button id="camera-mode-btn" class="flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all ${
+                                    cameraActive
+                                        ? 'bg-white text-emerald-600 shadow-xl ring-2 ring-white/50'
+                                        : 'bg-white/20 text-white hover:bg-white/30 disabled:opacity-50'
+                                }" ${cameraActive ? 'disabled' : ''}>
+                                    ${getIconHtml('camera', 'w-5 h-5')}
+                                    Use Camera
+                                </button>
+                            </div>
+
+                            <!-- Camera View -->
+                            ${cameraActive ? `
+                            <div class="space-y-4">
+                                <div class="relative bg-black rounded-2xl overflow-hidden">
+                                    <div id="video-container" class="w-full max-h-96 object-contain"></div>
+                                    <div class="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4">
+                                        <button id="capture-photo-btn" class="bg-white text-emerald-600 px-8 py-4 rounded-full font-bold shadow-lg hover:shadow-xl transition-all flex items-center gap-2 ring-4 ring-white/50">
+                                            ${getIconHtml('camera', 'w-5 h-5')}
+                                            Capture Photo
+                                        </button>
+                                        <button id="stop-camera-btn" class="bg-red-500 text-white p-4 rounded-full font-bold shadow-lg hover:bg-red-600 transition-all">
+                                            ${getIconHtml('x', 'w-5 h-5')}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            ` : ''}
+
+                            <!-- Upload Section -->
+                            ${!cameraActive && captureMode === 'upload' && !preview ? `
+                            <div class="max-w-2xl mx-auto">
+                                <label
+                                    for="file-upload"
+                                    class="flex flex-col items-center justify-center w-full h-48 border-2 border-dashed border-white/50 rounded-2xl cursor-pointer bg-white/10 hover:bg-white/20 transition backdrop-blur-sm"
+                                >
+                                    ${getIconHtml('image-icon', 'w-12 h-12 text-white mb-3')}
+                                    <p class="text-white font-semibold text-lg mb-1">
+                                        Click to upload or drag and drop
+                                    </p>
+                                    <p class="text-white/80 text-sm">PNG, JPG, JPEG (max 10MB)</p>
+                                </label>
+                            </div>
+                            ` : ''}
+                        </div>
+
+                        <!-- Hidden elements for camera and file input -->
+                        <div id="hidden-elements" class="hidden"></div>
+
+                        <!-- Preview and Results Section -->
+                        <div class="p-8">
+                            <!-- Error Message -->
+                            ${error ? `
+                            <div class="mb-6 p-4 bg-red-50 border border-red-300 rounded-xl flex items-start gap-3">
+                                ${getIconHtml('alert-triangle', 'w-5 h-5 text-red-600 flex-shrink-0 mt-0.5')}
+                                <div>
+                                    <p class="text-red-800 font-semibold">Error</p>
+                                    <p class="text-red-600 text-sm">${error}</p>
+                                </div>
+                            </div>
+                            ` : ''}
+
+                            <!-- Preview Section -->
+                            ${preview ? `
+                            <div class="mb-6">
+                                <div class="flex justify-between items-center mb-4">
+                                    <h3 class="text-xl font-semibold text-gray-800">
+                                        ${captureMode === 'camera' ? 'Captured Photo' : 'Uploaded Image'}
+                                    </h3>
+                                    <button id="reset-app-btn" class="text-gray-500 hover:text-red-600 transition flex items-center gap-2 p-1 rounded-lg hover:bg-red-50">
+                                        ${getIconHtml('x', 'w-4 h-4')}
+                                        <span class="text-sm">Clear Image</span>
+                                    </button>
+                                </div>
+                                <div class="relative">
+                                    <img src="${preview}" alt="Preview" class="w-full max-h-96 object-contain rounded-2xl border border-gray-200 shadow-lg"/>
+                                </div>
+                                <div class="mt-6 flex justify-center">
+                                    <button id="analyze-btn" ${loading ? 'disabled' : ''} class="px-8 py-4 rounded-xl font-bold text-white transition-all transform hover:scale-105 flex items-center gap-3 shadow-xl ${
+                                        loading
+                                            ? "bg-gray-400 cursor-not-allowed"
+                                            : "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                                    }">
+                                        ${loading ? `
+                                            <div class="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                            <span>Analyzing...</span>
+                                        ` : `
+                                            ${getIconHtml('video', 'w-5 h-5')}
+                                            <span>Analyze Waste</span>
+                                        `}
+                                    </button>
+                                </div>
+                            </div>
+                            ` : ''}
+
+                            <!-- Results -->
+                            ${result && result.success ? `
+                            <div class="space-y-6 animate-fade-in">
+                                <!-- Summary Cards -->
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div class="rounded-2xl p-6 border ${getCardBackgroundColor('green')}">
+                                        <div class="flex items-center gap-3">
+                                            ${getIconHtml('recycle', 'w-8 h-8 text-green-600')}
+                                            <div>
+                                                <p class="text-3xl font-bold text-green-700">${result.summary.recyclable_items}</p>
+                                                <p class="text-sm text-green-600 font-medium">Recyclable</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="rounded-2xl p-6 border ${getCardBackgroundColor('red')}">
+                                        <div class="flex items-center gap-3">
+                                            ${getIconHtml('alert-triangle', 'w-8 h-8 text-red-600')}
+                                            <div>
+                                                <p class="text-3xl font-bold text-red-700">${result.summary.hazardous_items}</p>
+                                                <p class="text-sm text-red-600 font-medium">Hazardous/E-Waste</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="rounded-2xl p-6 border ${getCardBackgroundColor('gray')}">
+                                        <div class="flex items-center gap-3">
+                                            ${getIconHtml('trash-2', 'w-8 h-8 text-gray-600')}
+                                            <div>
+                                                <p class="text-3xl font-bold text-gray-700">${result.summary.general_waste_items}</p>
+                                                <p class="text-sm text-gray-600 font-medium">General Waste</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Gemini Feature Button -->
+                                <div class="flex justify-center pt-2">
+                                    <button id="gemini-guide-btn" ${geminiLoading ? 'disabled' : ''} class="px-6 py-3 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] flex items-center gap-2 shadow-md ${
+                                        geminiLoading
+                                            ? "bg-gray-400 cursor-not-allowed"
+                                            : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700"
+                                    }">
+                                        ${geminiLoading ? `
+                                            <div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                            <span>Generating Guide...</span>
+                                        ` : `
+                                            <span class="text-xl">✨</span>
+                                            <span>Generate Localized Disposal Guide</span>
+                                        `}
+                                    </button>
+                                </div>
+
+                                <!-- Detected Materials -->
+                                <div>
+                                    <h3 class="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                                        ${getIconHtml('check-circle', 'w-6 h-6 text-emerald-600')}
+                                        Detected Materials (${result.total_materials_detected})
+                                    </h3>
+                                    ${result.materials.length === 0 ? `
+                                        <div class="p-4 text-center text-gray-500 bg-gray-50 rounded-xl border border-gray-200">
+                                            No specific materials were confidently detected. Try a clearer photo.
+                                        </div>
+                                    ` : `
+                                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                            ${result.materials.map((material, index) => `
+                                            <div key="${index}" class="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all border overflow-hidden ${getCategoryColor(material.classification.color)}">
+                                                <div class="p-4">
+                                                    <div class="flex items-start justify-between mb-3">
+                                                        <div class="flex items-center gap-2">
+                                                            ${getCategoryIcon(material.classification.category)}
+                                                            <h4 class="font-bold text-gray-800 text-lg">
+                                                                ${material.detected_material}
+                                                            </h4>
+                                                        </div>
+                                                        <span class="text-xs font-semibold bg-white px-2 py-1 rounded-full border border-gray-200">
+                                                            ${(material.confidence * 100).toFixed(0)}%
+                                                        </span>
+                                                    </div>
+                                                    
+                                                    <div class="space-y-2 text-sm">
+                                                        <div>
+                                                            <span class="font-semibold text-gray-700">Category:</span>
+                                                            <p class="text-gray-600">${material.classification.category}</p>
+                                                        </div>
+                                                        <div>
+                                                            <span class="font-semibold text-gray-700">Bin:</span>
+                                                            <span class="ml-2 inline-block px-2 py-1 rounded-lg text-xs font-bold ${getBinColorClasses(material.classification.bin_color)}">
+                                                                ${material.classification.bin_color}
+                                                            </span>
+                                                        </div>
+                                                        <div>
+                                                            <span class="font-semibold text-gray-700">Instructions:</span>
+                                                            <p class="text-gray-600 mt-1 leading-snug">
+                                                                ${material.classification.instructions}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            `).join('')}
+                                        </div>
+                                    `}
+                                </div>
+                                
+                                <!-- Gemini Sustainability Guide -->
+                                ${geminiGuide || geminiError ? `
+                                <div class="mt-8 p-6 bg-indigo-50 border border-indigo-200 rounded-2xl shadow-inner animate-fade-in">
+                                    <h3 class="text-2xl font-bold text-indigo-800 mb-4 flex items-center gap-2">
+                                        <span class="text-2xl">✨</span>
+                                        Sustainability & Disposal Guide
+                                    </h3>
+                                    ${geminiError ? `
+                                        <div class="p-4 bg-red-100 text-red-700 rounded-lg border border-red-300">
+                                            ${getIconHtml('alert-triangle', 'w-5 h-5 inline mr-2')}
+                                            ${geminiError}
+                                        </div>
+                                    ` : ''}
+                                    ${geminiGuide ? `
+                                        <div class="prose prose-sm max-w-none text-gray-700">
+                                            <p class="text-sm text-indigo-600 italic mb-3">
+                                                Generated by Gemini with up-to-date information.
+                                            </p>
+                                            <div id="gemini-guide-content">
+                                                ${convertMarkdownToHtml(geminiGuide)}
+                                            </div>
+                                        </div>
+                                    ` : ''}
+                                    <!-- Sources -->
+                                    ${geminiSources.length > 0 ? `
+                                        <div class="mt-4 pt-3 border-t border-indigo-100">
+                                            <p class="text-xs font-semibold text-indigo-700 mb-1">Sources (Grounding):</p>
+                                            <ul class="text-xs space-y-1 max-h-20 overflow-y-auto pl-4 list-disc">
+                                                ${geminiSources.map((source, index) => `
+                                                    <li key="${index}">
+                                                        <a href="${source.uri}" target="_blank" rel="noopener noreferrer" class="text-indigo-500 hover:text-indigo-700 underline">
+                                                            ${source.title || source.uri}
+                                                        </a>
+                                                    </li>
+                                                `).join('')}
+                                            </ul>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                ` : ''}
+                            </div>
+                            ` : ''}
+
+                            ${result && !result.success ? `
+                            <div class="text-center py-8">
+                                ${getIconHtml('alert-triangle', 'w-16 h-16 text-red-500 mx-auto mb-4')}
+                                <p class="text-red-600 font-semibold text-lg">
+                                    ${result.message || "An unknown error occurred during detection. Please check your network and API status."}
+                                </p>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+
+                    <!-- Footer -->
+                    <div class="mt-8 text-center text-gray-600 text-sm">
+                        <p>Powered by AI • Helping create a sustainable future 🌍</p>
+                        <p class="mt-2 text-xs text-gray-500">
+                            Camera-enabled waste classification system
+                        </p>
+                    </div>
                 </div>
-              )}
-            </div>
-          )}
+            `;
 
-          <p className="text-xs text-center text-blue-700 mt-10">
-            Backend connected:{" "}
-            <code className="bg-blue-100 px-2 py-1 rounded">
-              {API_URL}
-            </code>
-          </p>
-        </div>
-      );
-    };
+            // --- Post-Render DOM manipulation (Injecting Live Elements & Events) ---
+            
+            // Inject hidden elements (file input, video, canvas)
+            const hiddenContainer = document.getElementById('hidden-elements');
+            if (hiddenContainer) {
+                hiddenContainer.innerHTML = ''; // Clear
+                hiddenContainer.appendChild(fileInputRef);
+                hiddenContainer.appendChild(canvasRef);
+            }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
-  </script>
+            // Inject video into its container if camera is active
+            if (cameraActive) {
+                const videoContainer = document.getElementById('video-container');
+                if (videoContainer) {
+                    videoContainer.appendChild(videoRef);
+                    videoRef.setAttribute('autoplay', '');
+                    videoRef.setAttribute('playsinline', '');
+                    videoRef.className = "w-full max-h-96 object-contain rounded-2xl";
+                }
+            }
+
+
+            // --- Event Listeners (Must be re-attached after every render) ---
+
+            document.getElementById('info-toggle')?.addEventListener('click', () => {
+                showInfo = !showInfo;
+                renderApp();
+            });
+            document.getElementById('info-close')?.addEventListener('click', () => {
+                showInfo = false;
+                renderApp();
+            });
+
+            document.getElementById('upload-mode-btn')?.addEventListener('click', () => {
+                resetApp();
+                captureMode = 'upload';
+                renderApp();
+            });
+
+            document.getElementById('camera-mode-btn')?.addEventListener('click', startCamera);
+            document.getElementById('stop-camera-btn')?.addEventListener('click', stopCamera);
+            document.getElementById('capture-photo-btn')?.addEventListener('click', capturePhoto);
+
+            fileInputRef.removeEventListener('change', handleFileChange); // Prevent multiple handlers
+            fileInputRef.addEventListener('change', handleFileChange);
+
+            document.getElementById('analyze-btn')?.addEventListener('click', handleSubmit);
+            document.getElementById('reset-app-btn')?.addEventListener('click', resetApp);
+            document.getElementById('gemini-guide-btn')?.addEventListener('click', fetchGeminiGuide);
+            
+            // Re-render icons if needed (Lucide client-side rendering)
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        };
+
+        // Initial render
+        window.onload = renderApp;
+
+    </script>
 </body>
 </html>
