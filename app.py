@@ -1,171 +1,392 @@
 import io
+import os
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image, ImageStat
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
 
-# ✅ Allow specific origins (replace Vercel link once deployed)
-CORS(app, origins=[
-    "https://your-frontend-name.vercel.app",  # Replace with your actual Vercel URL
-    "http://localhost:3000"
-])
+# CORS configuration for production
+CORS(app, resources={
+    r"/*": {
+        "origins": ["*"],  # Update with your Vercel domain in production
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 # --- Material Detection Logic ---
 def detect_materials_in_image(img_data: Image.Image):
     """
-    Detects multiple waste materials using color segmentation & texture analysis.
+    Detects multiple waste materials present in the image using color segmentation
+    and texture analysis. Simulates multi-object detection.
     """
-    img = img_data.convert('RGB')
-    width, height = img.size
-    pixels = np.array(img)
-    
-    detected_materials = []
-    material_profiles = {
-        "Plastic Bottle": {"color_range": [(100,150,200), (200,220,255)], "min_pixels": 500, "characteristics": "transparent, blue tint"},
-        "Food Waste": {"color_range": [(50,80,20), (180,220,100)], "min_pixels": 400, "characteristics": "organic texture"},
-        "Paper/Cardboard": {"color_range": [(180,160,140), (255,240,220)], "min_pixels": 600, "characteristics": "fibrous, matte"},
-        "Metal Can": {"color_range": [(150,150,150), (220,220,230)], "min_pixels": 300, "characteristics": "metallic, reflective"},
-        "Battery": {"color_range": [(20,20,20), (80,80,80)], "min_pixels": 200, "characteristics": "cylindrical, dark"}
-    }
-
-    for material_name, profile in material_profiles.items():
-        color_min, color_max = profile["color_range"]
-        mask = np.all((pixels >= color_min) & (pixels <= color_max), axis=2)
-        pixel_count = np.sum(mask)
-        if pixel_count >= profile["min_pixels"]:
-            percentage = (pixel_count / (width * height)) * 100
+    try:
+        img = img_data.convert('RGB')
+        width, height = img.size
+        pixels = np.array(img)
+        
+        detected_materials = []
+        material_regions = []
+        
+        # Define material detection profiles
+        material_profiles = {
+            "Plastic Bottle": {
+                "color_range": [(100, 150, 200), (200, 220, 255)],
+                "min_pixels": 500,
+                "characteristics": "transparent, blue tint, smooth"
+            },
+            "Food Waste": {
+                "color_range": [(50, 80, 20), (180, 220, 100)],
+                "min_pixels": 400,
+                "characteristics": "organic colors, irregular texture"
+            },
+            "Paper/Cardboard": {
+                "color_range": [(180, 160, 140), (255, 240, 220)],
+                "min_pixels": 600,
+                "characteristics": "fibrous, light colored, matte"
+            },
+            "Metal Can": {
+                "color_range": [(150, 150, 150), (220, 220, 230)],
+                "min_pixels": 300,
+                "characteristics": "reflective, metallic sheen, cylindrical"
+            },
+            "Glass": {
+                "color_range": [(200, 230, 230), (255, 255, 255)],
+                "min_pixels": 400,
+                "characteristics": "transparent, reflective, smooth"
+            },
+            "Plastic Bag": {
+                "color_range": [(200, 200, 200), (255, 255, 255)],
+                "min_pixels": 800,
+                "characteristics": "thin, flexible, wrinkled texture"
+            },
+            "Food Container": {
+                "color_range": [(220, 220, 220), (255, 255, 255)],
+                "min_pixels": 500,
+                "characteristics": "rigid plastic, white/clear"
+            },
+            "Aluminum Foil": {
+                "color_range": [(180, 180, 180), (240, 240, 240)],
+                "min_pixels": 300,
+                "characteristics": "highly reflective, crinkled"
+            },
+            "Battery": {
+                "color_range": [(20, 20, 20), (80, 80, 80)],
+                "min_pixels": 200,
+                "characteristics": "cylindrical, dark, small"
+            },
+            "Electronic Device": {
+                "color_range": [(10, 10, 10), (60, 60, 60)],
+                "min_pixels": 600,
+                "characteristics": "dark, rigid, complex shape"
+            }
+        }
+        
+        # Analyze image for each material type
+        for material_name, profile in material_profiles.items():
+            color_min, color_max = profile["color_range"]
+            
+            # Create color mask
+            mask = np.all((pixels >= color_min) & (pixels <= color_max), axis=2)
+            pixel_count = np.sum(mask)
+            
+            if pixel_count >= profile["min_pixels"]:
+                percentage = (pixel_count / (width * height)) * 100
+                
+                coords = np.argwhere(mask)
+                if len(coords) > 0:
+                    y_min, x_min = coords.min(axis=0)
+                    y_max, x_max = coords.max(axis=0)
+                    
+                    region = pixels[y_min:y_max+1, x_min:x_max+1]
+                    region_stats = {
+                        "avg_color": region.mean(axis=(0, 1)).tolist(),
+                        "brightness": float(region.mean()),
+                        "variance": float(region.var())
+                    }
+                    
+                    detected_materials.append({
+                        "material": material_name,
+                        "confidence": min(0.95, 0.70 + (percentage / 100)),
+                        "coverage": round(percentage, 2),
+                        "characteristics": profile["characteristics"],
+                        "region_stats": region_stats,
+                        "position": {
+                            "x": int((x_min + x_max) / 2),
+                            "y": int((y_min + y_max) / 2),
+                            "bbox": [int(x_min), int(y_min), int(x_max), int(y_max)]
+                        }
+                    })
+        
+        # Fallback detection if no materials found
+        if not detected_materials:
+            stat = ImageStat.Stat(img)
+            r, g, b = stat.mean
+            brightness = (r + g + b) / 3
+            variance = sum(stat.var) / 3
+            
+            if brightness > 180:
+                material_name = "Light-colored Waste"
+            else:
+                material_name = "Dark-colored Waste"
+            
             detected_materials.append({
                 "material": material_name,
-                "confidence": round(min(0.95, 0.70 + (percentage / 100)), 2),
-                "coverage": round(percentage, 2),
-                "characteristics": profile["characteristics"]
+                "confidence": 0.65,
+                "coverage": 100.0,
+                "characteristics": f"unidentified {material_name.lower()}",
+                "region_stats": {
+                    "avg_color": [r, g, b],
+                    "brightness": brightness,
+                    "variance": variance
+                },
+                "position": {"x": width // 2, "y": height // 2, "bbox": [0, 0, width, height]}
             })
+        
+        detected_materials.sort(key=lambda x: x["coverage"], reverse=True)
+        return detected_materials, material_regions
     
-    if not detected_materials:
-        stat = ImageStat.Stat(img)
-        r, g, b = stat.mean
-        brightness = (r + g + b) / 3
-        material_type = "Light-colored Waste" if brightness > 180 else "Dark-colored Waste"
-        detected_materials.append({
-            "material": material_type,
-            "confidence": 0.65,
-            "coverage": 100.0,
-            "characteristics": "unidentified material"
-        })
-    
-    detected_materials.sort(key=lambda x: x["coverage"], reverse=True)
-    return detected_materials
+    except Exception as e:
+        logger.error(f"Error in detect_materials_in_image: {str(e)}")
+        raise
 
-# --- Classification Logic ---
-def classify_waste_material(material_name):
+
+def classify_waste_material(material_name, region_stats):
+    """
+    Classifies each detected material into waste categories with disposal instructions.
+    """
     classification_map = {
         "Plastic Bottle": {
-            "category": "Recyclable",
+            "category": "Recyclable - Plastic",
+            "subcategory": "PET/HDPE Bottle",
             "bin_color": "Blue Bin",
-            "instructions": "Rinse and crush before recycling.",
+            "instructions": "Empty and rinse bottle. Remove cap. Crush to save space. Check for recycling symbol (#1 or #2).",
             "color": "blue",
             "recyclable": True,
             "hazardous": False
         },
         "Food Waste": {
-            "category": "Organic Waste",
-            "bin_color": "Green Bin",
-            "instructions": "Place in compost or biodegradable bin.",
+            "category": "Compost/Organic",
+            "subcategory": "Biodegradable Organic Matter",
+            "bin_color": "Green/Brown Bin",
+            "instructions": "Place in compost bin. Avoid meat, dairy, or oily foods if composting at home.",
             "color": "green",
             "recyclable": False,
             "hazardous": False
         },
         "Paper/Cardboard": {
-            "category": "Recyclable",
+            "category": "Recyclable - Paper",
+            "subcategory": "Clean Paper/Cardboard",
             "bin_color": "Blue Bin",
-            "instructions": "Keep clean and dry before recycling.",
+            "instructions": "Flatten cardboard boxes. Remove plastic tape and labels. Keep dry and clean.",
             "color": "yellow",
             "recyclable": True,
             "hazardous": False
         },
         "Metal Can": {
-            "category": "Recyclable",
+            "category": "Recyclable - Metal",
+            "subcategory": "Aluminum/Steel Can",
             "bin_color": "Blue Bin",
-            "instructions": "Rinse and crush before recycling.",
+            "instructions": "Rinse thoroughly. Remove paper labels if possible. Crush to save space.",
+            "color": "gray",
+            "recyclable": True,
+            "hazardous": False
+        },
+        "Glass": {
+            "category": "Recyclable - Glass",
+            "subcategory": "Glass Container",
+            "bin_color": "Blue/Green Bin",
+            "instructions": "Rinse thoroughly. Remove metal caps. Separate by color if required locally.",
+            "color": "blue",
+            "recyclable": True,
+            "hazardous": False
+        },
+        "Plastic Bag": {
+            "category": "Soft Plastic",
+            "subcategory": "Film Plastic",
+            "bin_color": "Special Collection",
+            "instructions": "Take to grocery store collection point. DO NOT put in regular recycling bin.",
+            "color": "yellow",
+            "recyclable": True,
+            "hazardous": False
+        },
+        "Food Container": {
+            "category": "Recyclable - Plastic",
+            "subcategory": "Food-grade Plastic",
+            "bin_color": "Blue Bin",
+            "instructions": "Wash thoroughly to remove food residue. Check recycling number (usually #5).",
+            "color": "blue",
+            "recyclable": True,
+            "hazardous": False
+        },
+        "Aluminum Foil": {
+            "category": "Recyclable - Metal",
+            "subcategory": "Aluminum Foil",
+            "bin_color": "Blue Bin",
+            "instructions": "Clean off food residue. Ball up to golf-ball size before recycling.",
             "color": "gray",
             "recyclable": True,
             "hazardous": False
         },
         "Battery": {
             "category": "Hazardous Waste",
-            "bin_color": "Special Bin",
-            "instructions": "Dispose at a battery recycling point.",
+            "subcategory": "Electronic/Chemical Waste",
+            "bin_color": "Special Disposal",
+            "instructions": "NEVER throw in regular trash. Take to designated battery collection point or e-waste facility.",
+            "color": "red",
+            "recyclable": False,
+            "hazardous": True
+        },
+        "Electronic Device": {
+            "category": "E-Waste",
+            "subcategory": "Electronic Equipment",
+            "bin_color": "E-Waste Collection",
+            "instructions": "Take to certified e-waste recycling center. Contains valuable and hazardous materials.",
             "color": "red",
             "recyclable": False,
             "hazardous": True
         }
     }
+    
     return classification_map.get(material_name, {
         "category": "General Waste",
+        "subcategory": "Unidentified",
         "bin_color": "Black Bin",
-        "instructions": "Dispose responsibly.",
+        "instructions": "Unable to classify. Dispose in general waste bin.",
         "color": "gray",
         "recyclable": False,
         "hazardous": False
     })
 
-# --- API Endpoints ---
-@app.route('/')
+
+@app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "status": "running",
-        "message": "Waste Classifier Backend Online"
-    })
+        "status": "online",
+        "message": "Multi-Material Waste Classifier API",
+        "version": "2.0",
+        "endpoints": {
+            "/classify_waste": "POST - Upload image for classification",
+            "/health": "GET - Health check"
+        }
+    }), 200
 
-@app.route('/api/predict', methods=['POST'])
-def predict():
-    if 'file' not in request.files:
-        return jsonify({"success": False, "message": "No file uploaded"}), 400
+
+@app.route('/classify_waste', methods=['POST', 'OPTIONS'])
+def classify_waste_api():
+    """Multi-material detection and classification endpoint."""
     
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"success": False, "message": "Empty filename"}), 400
-
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+    
+    if 'file' not in request.files:
+        return jsonify({
+            "success": False,
+            "error": "No file uploaded",
+            "message": "Please upload an image file."
+        }), 400
+    
+    uploaded_file = request.files['file']
+    
+    if uploaded_file.filename == '':
+        return jsonify({
+            "success": False,
+            "error": "Empty filename",
+            "message": "No file selected."
+        }), 400
+    
     try:
-        img = Image.open(io.BytesIO(file.read()))
-        detected_materials = detect_materials_in_image(img)
-        results = []
+        # Read and validate image
+        img_bytes = uploaded_file.read()
+        
+        # Check file size (10MB limit)
+        if len(img_bytes) > 10 * 1024 * 1024:
+            return jsonify({
+                "success": False,
+                "error": "File too large",
+                "message": "File size must be less than 10MB."
+            }), 400
+        
+        img_stream = io.BytesIO(img_bytes)
+        img = Image.open(img_stream)
+        img.verify()
+        
+        # Reopen for processing
+        img_stream.seek(0)
+        img = Image.open(img_stream)
+        
+        # Detect and classify materials
+        detected_materials, material_regions = detect_materials_in_image(img)
+        
+        classified_materials = []
         for material in detected_materials:
-            classification = classify_waste_material(material["material"])
-            results.append({
+            classification = classify_waste_material(
+                material["material"], 
+                material["region_stats"]
+            )
+            
+            classified_materials.append({
                 "detected_material": material["material"],
-                "confidence": material["confidence"],
+                "confidence": round(material["confidence"], 2),
                 "coverage_percentage": material["coverage"],
                 "characteristics": material["characteristics"],
+                "position": material["position"],
                 "classification": classification
             })
         
-        total_recyclable = sum(1 for m in results if m["classification"]["recyclable"])
-        total_hazardous = sum(1 for m in results if m["classification"]["hazardous"])
+        # Generate summary
+        total_recyclable = sum(1 for m in classified_materials if m["classification"]["recyclable"])
+        total_hazardous = sum(1 for m in classified_materials if m["classification"]["hazardous"])
         
-        return jsonify({
+        primary_material = classified_materials[0] if classified_materials else None
+        
+        response = {
             "success": True,
-            "total_materials_detected": len(results),
+            "total_materials_detected": len(classified_materials),
+            "materials": classified_materials,
             "summary": {
                 "recyclable_items": total_recyclable,
                 "hazardous_items": total_hazardous,
-                "general_waste_items": len(results) - total_recyclable - total_hazardous
+                "general_waste_items": len(classified_materials) - total_recyclable - total_hazardous
             },
-            "materials": results
-        })
+            "primary_classification": {
+                "category": primary_material["classification"]["category"] if primary_material else "Unknown",
+                "status": primary_material["classification"]["subcategory"] if primary_material else "No materials detected",
+                "message": primary_material["classification"]["instructions"] if primary_material else "Upload a clearer image.",
+                "color": primary_material["classification"]["color"] if primary_material else "gray",
+                "bin_color": primary_material["classification"]["bin_color"] if primary_material else "N/A"
+            }
+        }
+        
+        logger.info(f"Successfully processed image - detected {len(classified_materials)} materials")
+        return jsonify(response), 200
+    
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        logger.error(f"Error processing image: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": "Processing failed",
+            "message": f"Image processing error: {str(e)}"
+        }), 400
 
-@app.route('/health')
-def health():
+
+@app.route('/health', methods=['GET'])
+def health_check():
     return jsonify({
-        "status": "ok",
-        "message": "Flask waste classifier API is healthy"
-    })
+        "status": "healthy",
+        "message": "Multi-Material Waste Classifier API is running",
+        "version": "2.0"
+    }), 200
 
-# --- Main ---
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, port=port, host='0.0.0.0')
